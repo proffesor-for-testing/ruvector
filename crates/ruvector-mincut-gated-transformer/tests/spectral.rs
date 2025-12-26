@@ -24,7 +24,7 @@ fn test_config_default() {
 
 #[test]
 fn test_laplacian_empty_graph() {
-    let encoder = SpectralPositionEncoder::default_config();
+    let encoder = SpectralPositionEncoder::default();
 
     let edges: Vec<(u16, u16)> = vec![];
     let laplacian = encoder.compute_laplacian(&edges, 4);
@@ -37,7 +37,7 @@ fn test_laplacian_empty_graph() {
 
 #[test]
 fn test_laplacian_simple_chain() {
-    let encoder = SpectralPositionEncoder::default_config();
+    let encoder = SpectralPositionEncoder::default();
 
     // Chain graph: 0-1-2-3
     let edges = vec![(0, 1), (1, 2), (2, 3)];
@@ -64,7 +64,7 @@ fn test_laplacian_simple_chain() {
 
 #[test]
 fn test_laplacian_symmetry() {
-    let encoder = SpectralPositionEncoder::default_config();
+    let encoder = SpectralPositionEncoder::default();
 
     // Triangle graph
     let edges = vec![(0, 1), (1, 2), (2, 0)];
@@ -81,7 +81,7 @@ fn test_laplacian_symmetry() {
 
 #[test]
 fn test_laplacian_complete_graph() {
-    let encoder = SpectralPositionEncoder::default_config();
+    let encoder = SpectralPositionEncoder::default();
 
     // Complete graph K4: all nodes connected
     let edges = vec![
@@ -108,7 +108,7 @@ fn test_laplacian_complete_graph() {
 
 #[test]
 fn test_laplacian_out_of_bounds() {
-    let encoder = SpectralPositionEncoder::default_config();
+    let encoder = SpectralPositionEncoder::default();
 
     // Include edge with node index out of bounds
     let edges = vec![(0, 1), (1, 2), (2, 100)]; // 100 is out of bounds for n=4
@@ -124,7 +124,7 @@ fn test_laplacian_out_of_bounds() {
 
 #[test]
 fn test_normalized_laplacian() {
-    let encoder = SpectralPositionEncoder::default_config();
+    let encoder = SpectralPositionEncoder::default();
 
     let edges = vec![(0, 1), (1, 2)];
     let laplacian = encoder.compute_normalized_laplacian(&edges, 3);
@@ -229,7 +229,7 @@ fn test_rayleigh_quotient() {
 
 #[test]
 fn test_encode_positions_basic() {
-    let encoder = SpectralPositionEncoder::default_config();
+    let encoder = SpectralPositionEncoder::default();
 
     let eigenvectors = vec![
         vec![0.1, 0.2, 0.3, 0.4],
@@ -257,7 +257,7 @@ fn test_encode_positions_basic() {
 
 #[test]
 fn test_encode_positions_empty() {
-    let encoder = SpectralPositionEncoder::default_config();
+    let encoder = SpectralPositionEncoder::default();
 
     let eigenvectors: Vec<Vec<f32>> = vec![];
     let encoding = encoder.encode_positions(&eigenvectors);
@@ -464,7 +464,7 @@ fn test_encode_from_edges_star() {
 
 #[test]
 fn test_eigenvectors_count() {
-    let encoder = SpectralPositionEncoder::default_config();
+    let encoder = SpectralPositionEncoder::default();
 
     let edges = vec![(0, 1), (1, 2), (2, 3)];
     let laplacian = encoder.compute_normalized_laplacian(&edges, 4);
@@ -482,7 +482,7 @@ fn test_eigenvectors_count() {
 
 #[test]
 fn test_eigenvectors_normalized() {
-    let encoder = SpectralPositionEncoder::default_config();
+    let encoder = SpectralPositionEncoder::default();
 
     let edges = vec![(0, 1), (1, 2)];
     let laplacian = encoder.compute_normalized_laplacian(&edges, 3);
@@ -499,7 +499,7 @@ fn test_eigenvectors_normalized() {
 
 #[test]
 fn test_position_encoding_uniqueness() {
-    let encoder = SpectralPositionEncoder::default_config();
+    let encoder = SpectralPositionEncoder::default();
 
     // Different graph structures should produce different encodings
     let edges1 = vec![(0, 1), (1, 2)]; // Chain

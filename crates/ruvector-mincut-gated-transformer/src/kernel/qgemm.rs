@@ -217,7 +217,6 @@ pub fn compute_scale(values: &[f32]) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloc::vec;
     use alloc::vec::Vec;
 
     #[test]

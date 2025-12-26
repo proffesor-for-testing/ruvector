@@ -18,6 +18,9 @@ pub struct RuntimeState {
     /// Configuration reference
     config: TransformerConfig,
 
+    /// Cached buffer layout to avoid recomputation
+    layout: BufferLayout,
+
     /// Main buffer holding all allocations
     buffer: Vec<u8>,
 
@@ -202,6 +205,7 @@ impl RuntimeState {
 
         Ok(Self {
             config,
+            layout,
             buffer,
             kv_state,
             cached_logits,
@@ -218,12 +222,15 @@ impl RuntimeState {
     /// Get Q buffer slice (i8)
     #[inline]
     pub fn q_buffer(&mut self) -> &mut [i8] {
-        let layout = BufferLayout::compute(&self.config);
         let s = self.config.seq_len_max as usize;
         let d = self.config.hidden as usize;
-        let start = layout.q_offset;
+        let start = self.layout.q_offset;
         let end = start + s * d;
-        // Safety: buffer is properly sized, i8 has same layout as u8
+        // SAFETY: The buffer is properly sized by BufferLayout::compute() and validated
+        // at initialization. The slice [start..end] is guaranteed to be within buffer bounds
+        // because layout offsets are calculated from the same config. i8 has the same size
+        // and alignment as u8 (both are 1 byte), making the pointer cast sound. The returned
+        // slice's lifetime is tied to &mut self, preventing aliasing.
         unsafe {
             core::slice::from_raw_parts_mut(
                 self.buffer[start..end].as_mut_ptr() as *mut i8,
@@ -235,11 +242,15 @@ impl RuntimeState {
     /// Get K buffer slice (i8)
     #[inline]
     pub fn k_buffer(&mut self) -> &mut [i8] {
-        let layout = BufferLayout::compute(&self.config);
-        let s = self.config.seq_len_max as usize;
+                let s = self.config.seq_len_max as usize;
         let d = self.config.hidden as usize;
-        let start = layout.k_offset;
+        let start = self.layout.k_offset;
         let end = start + s * d;
+        // SAFETY: The buffer is properly sized by BufferLayout::compute() and validated
+        // at initialization. The slice [start..end] is guaranteed to be within buffer bounds
+        // because layout offsets are calculated from the same config. i8 has the same size
+        // and alignment as u8 (both are 1 byte), making the pointer cast sound. The returned
+        // slice's lifetime is tied to &mut self, preventing aliasing.
         unsafe {
             core::slice::from_raw_parts_mut(
                 self.buffer[start..end].as_mut_ptr() as *mut i8,
@@ -251,11 +262,15 @@ impl RuntimeState {
     /// Get V buffer slice (i8)
     #[inline]
     pub fn v_buffer(&mut self) -> &mut [i8] {
-        let layout = BufferLayout::compute(&self.config);
-        let s = self.config.seq_len_max as usize;
+                let s = self.config.seq_len_max as usize;
         let d = self.config.hidden as usize;
-        let start = layout.v_offset;
+        let start = self.layout.v_offset;
         let end = start + s * d;
+        // SAFETY: The buffer is properly sized by BufferLayout::compute() and validated
+        // at initialization. The slice [start..end] is guaranteed to be within buffer bounds
+        // because layout offsets are calculated from the same config. i8 has the same size
+        // and alignment as u8 (both are 1 byte), making the pointer cast sound. The returned
+        // slice's lifetime is tied to &mut self, preventing aliasing.
         unsafe {
             core::slice::from_raw_parts_mut(
                 self.buffer[start..end].as_mut_ptr() as *mut i8,
@@ -267,11 +282,15 @@ impl RuntimeState {
     /// Get attention scores buffer (f32)
     #[inline]
     pub fn attn_scores_buffer(&mut self) -> &mut [f32] {
-        let layout = BufferLayout::compute(&self.config);
-        let h = self.config.heads as usize;
+                let h = self.config.heads as usize;
         let w = self.config.window_normal as usize;
-        let start = layout.attn_scores_offset;
+        let start = self.layout.attn_scores_offset;
         let count = h * w;
+        // SAFETY: The buffer is properly sized by BufferLayout::compute() with sufficient
+        // space for h * w * 4 bytes at attn_scores_offset. The buffer is allocated with
+        // 64-byte alignment (see line 169), which exceeds f32's 4-byte requirement.
+        // The pointer is derived from a valid slice, and the count (h * w elements) fits
+        // within the allocated region. The returned slice's lifetime is tied to &mut self.
         unsafe {
             core::slice::from_raw_parts_mut(
                 self.buffer[start..].as_mut_ptr() as *mut f32,
@@ -283,9 +302,13 @@ impl RuntimeState {
     /// Get FFN intermediate buffer (i32)
     #[inline]
     pub fn ffn_buffer(&mut self) -> &mut [i32] {
-        let layout = BufferLayout::compute(&self.config);
-        let ffn_int = self.config.ffn_intermediate() as usize;
-        let start = layout.ffn_intermediate_offset;
+                let ffn_int = self.config.ffn_intermediate() as usize;
+        let start = self.layout.ffn_intermediate_offset;
+        // SAFETY: The buffer is properly sized by BufferLayout::compute() with sufficient
+        // space for ffn_int * 4 bytes at ffn_intermediate_offset. The buffer is allocated
+        // with 64-byte alignment (see line 169), which exceeds i32's 4-byte requirement.
+        // The pointer is derived from a valid slice, and the count (ffn_int elements) fits
+        // within the allocated region. The returned slice's lifetime is tied to &mut self.
         unsafe {
             core::slice::from_raw_parts_mut(
                 self.buffer[start..].as_mut_ptr() as *mut i32,
@@ -297,10 +320,14 @@ impl RuntimeState {
     /// Get residual buffer (i8)
     #[inline]
     pub fn residual_buffer(&mut self) -> &mut [i8] {
-        let layout = BufferLayout::compute(&self.config);
-        let s = self.config.seq_len_max as usize;
+                let s = self.config.seq_len_max as usize;
         let d = self.config.hidden as usize;
-        let start = layout.residual_offset;
+        let start = self.layout.residual_offset;
+        // SAFETY: The buffer is properly sized by BufferLayout::compute() with sufficient
+        // space for s * d bytes at residual_offset. i8 has the same size and alignment as
+        // u8 (both are 1 byte), making the pointer cast sound. The pointer is derived from
+        // a valid slice, and the count (s * d elements) fits within the allocated region.
+        // The returned slice's lifetime is tied to &mut self, preventing aliasing.
         unsafe {
             core::slice::from_raw_parts_mut(
                 self.buffer[start..].as_mut_ptr() as *mut i8,
@@ -312,9 +339,13 @@ impl RuntimeState {
     /// Get norm temp buffer (f32)
     #[inline]
     pub fn norm_buffer(&mut self) -> &mut [f32] {
-        let layout = BufferLayout::compute(&self.config);
-        let d = self.config.hidden as usize;
-        let start = layout.norm_temp_offset;
+                let d = self.config.hidden as usize;
+        let start = self.layout.norm_temp_offset;
+        // SAFETY: The buffer is properly sized by BufferLayout::compute() with sufficient
+        // space for d * 4 bytes at norm_temp_offset. The buffer is allocated with 64-byte
+        // alignment (see line 169), which exceeds f32's 4-byte requirement. The pointer is
+        // derived from a valid slice, and the count (d elements) fits within the allocated
+        // region. The returned slice's lifetime is tied to &mut self, preventing aliasing.
         unsafe {
             core::slice::from_raw_parts_mut(
                 self.buffer[start..].as_mut_ptr() as *mut f32,
@@ -326,11 +357,15 @@ impl RuntimeState {
     /// Get K cache for a layer (i8)
     #[inline]
     pub fn k_cache(&mut self, layer: usize) -> &mut [i8] {
-        let layout = BufferLayout::compute(&self.config);
-        let s = self.config.seq_len_max as usize;
+                let s = self.config.seq_len_max as usize;
         let d = self.config.hidden as usize;
         let layer_size = s * d;
-        let start = layout.k_cache_offset + layer * layer_size;
+        let start = self.layout.k_cache_offset + layer * layer_size;
+        // SAFETY: The buffer is properly sized by BufferLayout::compute() with sufficient
+        // space for L * s * d bytes starting at k_cache_offset, where L is the number of
+        // layers. The caller must ensure layer < config.layers to stay within bounds.
+        // i8 has the same size and alignment as u8 (both are 1 byte), making the pointer
+        // cast sound. The returned slice's lifetime is tied to &mut self, preventing aliasing.
         unsafe {
             core::slice::from_raw_parts_mut(
                 self.buffer[start..].as_mut_ptr() as *mut i8,
@@ -342,11 +377,15 @@ impl RuntimeState {
     /// Get V cache for a layer (i8)
     #[inline]
     pub fn v_cache(&mut self, layer: usize) -> &mut [i8] {
-        let layout = BufferLayout::compute(&self.config);
-        let s = self.config.seq_len_max as usize;
+                let s = self.config.seq_len_max as usize;
         let d = self.config.hidden as usize;
         let layer_size = s * d;
-        let start = layout.v_cache_offset + layer * layer_size;
+        let start = self.layout.v_cache_offset + layer * layer_size;
+        // SAFETY: The buffer is properly sized by BufferLayout::compute() with sufficient
+        // space for L * s * d bytes starting at v_cache_offset, where L is the number of
+        // layers. The caller must ensure layer < config.layers to stay within bounds.
+        // i8 has the same size and alignment as u8 (both are 1 byte), making the pointer
+        // cast sound. The returned slice's lifetime is tied to &mut self, preventing aliasing.
         unsafe {
             core::slice::from_raw_parts_mut(
                 self.buffer[start..].as_mut_ptr() as *mut i8,
@@ -371,9 +410,8 @@ impl RuntimeState {
     pub fn flush_kv(&mut self) {
         self.kv_state.flush();
         // Optionally zero the cache memory for security
-        let layout = BufferLayout::compute(&self.config);
-        let cache_size = self.config.kv_cache_bytes();
-        let start = layout.k_cache_offset;
+                let cache_size = self.config.kv_cache_bytes();
+        let start = self.layout.k_cache_offset;
         for i in 0..cache_size {
             self.buffer[start + i] = 0;
         }

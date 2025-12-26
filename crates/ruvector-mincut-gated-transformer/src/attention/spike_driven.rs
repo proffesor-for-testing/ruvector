@@ -109,12 +109,17 @@ impl SpikeDrivenAttention {
     pub fn new(config: SpikeDrivenConfig) -> Self {
         Self { config }
     }
+}
 
-    /// Create with default configuration.
-    pub fn default_config() -> Self {
-        Self::new(SpikeDrivenConfig::default())
+impl Default for SpikeDrivenAttention {
+    fn default() -> Self {
+        Self {
+            config: SpikeDrivenConfig::default(),
+        }
     }
+}
 
+impl SpikeDrivenAttention {
     /// Convert quantized i8 activations to spike trains using rate coding.
     ///
     /// Higher magnitude values produce more spikes.
@@ -389,7 +394,6 @@ impl SpikeDrivenAttention {
 mod tests {
     use super::*;
     use alloc::vec;
-    use alloc::vec::Vec;
 
     #[test]
     fn test_spike_train_creation() {
@@ -471,7 +475,7 @@ mod tests {
 
     #[test]
     fn test_attention_empty() {
-        let attn = SpikeDrivenAttention::default_config();
+        let attn = SpikeDrivenAttention::default();
 
         let q_spikes = vec![];
         let k_spikes = vec![];
@@ -483,7 +487,7 @@ mod tests {
 
     #[test]
     fn test_attention_basic() {
-        let attn = SpikeDrivenAttention::default_config();
+        let attn = SpikeDrivenAttention::default();
 
         // Create simple spike trains
         let mut q1 = SpikeTrain::new();
@@ -508,7 +512,7 @@ mod tests {
 
     #[test]
     fn test_energy_ratio() {
-        let attn = SpikeDrivenAttention::default_config();
+        let attn = SpikeDrivenAttention::default();
 
         let ratio = attn.energy_ratio(64, 256);
 
@@ -522,7 +526,7 @@ mod tests {
 
     #[test]
     fn test_binarization() {
-        let attn = SpikeDrivenAttention::default_config();
+        let attn = SpikeDrivenAttention::default();
 
         let values = vec![-64, -1, 0, 1, 64];
         let binary = attn.binarize(&values);
@@ -532,7 +536,7 @@ mod tests {
 
     #[test]
     fn test_sparse_attention() {
-        let attn = SpikeDrivenAttention::default_config();
+        let attn = SpikeDrivenAttention::default();
 
         // Create spike trains with different coincidence levels
         let mut q1 = SpikeTrain::new();
@@ -561,7 +565,7 @@ mod tests {
 
     #[test]
     fn test_causal_masking() {
-        let attn = SpikeDrivenAttention::default_config();
+        let attn = SpikeDrivenAttention::default();
 
         // Create 3 positions
         let mut spikes = vec![];

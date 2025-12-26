@@ -131,14 +131,17 @@ impl MincutDepthRouter {
         config.validate()?;
         Ok(Self { config })
     }
+}
 
-    /// Create a router with default configuration
-    pub fn default_router() -> Self {
+impl Default for MincutDepthRouter {
+    fn default() -> Self {
         Self {
             config: ModRoutingConfig::default(),
         }
     }
+}
 
+impl MincutDepthRouter {
     /// Route tokens based on gate packet and token positions.
     ///
     /// # Arguments
@@ -406,7 +409,7 @@ mod tests {
 
     #[test]
     fn test_router_creation() {
-        let router = MincutDepthRouter::default_router();
+        let router = MincutDepthRouter::default();
         assert_eq!(router.config.layer_capacity_ratio, 0.5);
 
         let config = ModRoutingConfig::default();
@@ -416,7 +419,7 @@ mod tests {
 
     #[test]
     fn test_route_tokens_stable() {
-        let router = MincutDepthRouter::default_router();
+        let router = MincutDepthRouter::default();
         let gate = GatePacket {
             lambda: 100,
             lambda_prev: 95, // Small delta (5)
@@ -438,7 +441,7 @@ mod tests {
 
     #[test]
     fn test_route_tokens_unstable() {
-        let router = MincutDepthRouter::default_router();
+        let router = MincutDepthRouter::default();
         let gate = GatePacket {
             lambda: 40,
             lambda_prev: 100, // Large delta (60)
@@ -458,7 +461,7 @@ mod tests {
 
     #[test]
     fn test_compute_layer_mask() {
-        let router = MincutDepthRouter::default_router();
+        let router = MincutDepthRouter::default();
         let routes = vec![
             TokenRoute::Compute,
             TokenRoute::Skip,
@@ -472,7 +475,7 @@ mod tests {
 
     #[test]
     fn test_routing_stats() {
-        let router = MincutDepthRouter::default_router();
+        let router = MincutDepthRouter::default();
         let routes = vec![
             TokenRoute::Compute,
             TokenRoute::Compute,

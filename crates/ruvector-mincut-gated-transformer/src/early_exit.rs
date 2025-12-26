@@ -208,7 +208,7 @@ impl CoherenceEarlyExit {
     }
 
     /// Create with default configuration.
-    pub fn with_defaults(max_layers: u16) -> Result<Self, &'static str> {
+    pub fn with_default_config(max_layers: u16) -> Result<Self, &'static str> {
         Self::new(EarlyExitConfig::default(), max_layers)
     }
 
@@ -433,7 +433,6 @@ impl CoherenceEarlyExit {
 mod tests {
     use super::*;
     use alloc::vec;
-    use alloc::vec::Vec;
 
     #[test]
     fn test_early_exit_config_default() {
@@ -464,7 +463,7 @@ mod tests {
         let controller = CoherenceEarlyExit::new(config, 4);
         assert!(controller.is_ok());
 
-        let controller = CoherenceEarlyExit::with_defaults(4);
+        let controller = CoherenceEarlyExit::with_default_config(4);
         assert!(controller.is_ok());
     }
 
@@ -571,7 +570,7 @@ mod tests {
 
     #[test]
     fn test_verify_speculation_exact() {
-        let controller = CoherenceEarlyExit::with_defaults(4).unwrap();
+        let controller = CoherenceEarlyExit::with_default_config(4).unwrap();
 
         let draft = vec![10, 100, 30, 20];
         let full = vec![15, 100, 35, 25];
@@ -588,7 +587,7 @@ mod tests {
 
     #[test]
     fn test_verify_speculation_topk() {
-        let controller = CoherenceEarlyExit::with_defaults(4).unwrap();
+        let controller = CoherenceEarlyExit::with_default_config(4).unwrap();
 
         let draft = vec![10, 100, 30, 20];
         let full = vec![15, 95, 135, 25];
@@ -616,7 +615,7 @@ mod tests {
             flags: 0,
         };
 
-        let decision = controller.should_exit(&stable_gate, 1);
+        let _decision = controller.should_exit(&stable_gate, 1);
         // May exit at layer 1 due to high stability
         // (depends on adaptive calculation)
 

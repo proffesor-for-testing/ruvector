@@ -109,7 +109,7 @@ fn test_refractory_period_enforcement() {
 
 #[test]
 fn test_attention_output_shape() {
-    let attn = SpikeDrivenAttention::default_config();
+    let attn = SpikeDrivenAttention::default();
 
     // Create simple spike trains
     let seq_len = 4;
@@ -139,7 +139,7 @@ fn test_attention_output_shape() {
 
 #[test]
 fn test_attention_causal_masking() {
-    let attn = SpikeDrivenAttention::default_config();
+    let attn = SpikeDrivenAttention::default();
 
     // Create spike trains where future positions have different patterns
     let mut q_spikes = vec![];
@@ -178,7 +178,7 @@ fn test_attention_causal_masking() {
 
 #[test]
 fn test_coincidence_detection() {
-    let attn = SpikeDrivenAttention::default_config();
+    let attn = SpikeDrivenAttention::default();
 
     // Test spike coincidence scoring
     let mut q_train = SpikeTrain::new();
@@ -208,7 +208,7 @@ fn test_coincidence_detection() {
 
 #[test]
 fn test_polarity_interaction() {
-    let attn = SpikeDrivenAttention::default_config();
+    let attn = SpikeDrivenAttention::default();
 
     // Test opposite polarities
     let mut q_pos = SpikeTrain::new();
@@ -241,7 +241,7 @@ fn test_polarity_interaction() {
 
 #[test]
 fn test_sparse_attention_top_k() {
-    let attn = SpikeDrivenAttention::default_config();
+    let attn = SpikeDrivenAttention::default();
 
     // Create scenario with clear top-k positions
     let mut q_spikes = vec![];
@@ -288,7 +288,7 @@ fn test_sparse_attention_top_k() {
 
 #[test]
 fn test_energy_ratio_estimation() {
-    let attn = SpikeDrivenAttention::default_config();
+    let attn = SpikeDrivenAttention::default();
 
     // Test various sequence lengths
     let test_cases = vec![
@@ -311,7 +311,7 @@ fn test_energy_ratio_estimation() {
 
 #[test]
 fn test_energy_ratio_scaling() {
-    let attn = SpikeDrivenAttention::default_config();
+    let attn = SpikeDrivenAttention::default();
 
     // Energy ratio should improve with larger sequences
     // (more multiplications avoided)
@@ -325,7 +325,7 @@ fn test_energy_ratio_scaling() {
 
 #[test]
 fn test_binarization() {
-    let attn = SpikeDrivenAttention::default_config();
+    let attn = SpikeDrivenAttention::default();
 
     let values = vec![-127, -50, -1, 0, 1, 50, 127];
     let binary = attn.binarize(&values);
@@ -374,7 +374,7 @@ fn test_end_to_end_encoding_and_attention() {
 
 #[test]
 fn test_zero_length_sequences() {
-    let attn = SpikeDrivenAttention::default_config();
+    let attn = SpikeDrivenAttention::default();
 
     let empty_spikes: Vec<SpikeTrain> = vec![];
     let output = attn.attention(&empty_spikes, &empty_spikes, &empty_spikes);
@@ -384,7 +384,7 @@ fn test_zero_length_sequences() {
 
 #[test]
 fn test_mismatched_dimensions() {
-    let attn = SpikeDrivenAttention::default_config();
+    let attn = SpikeDrivenAttention::default();
 
     let mut q_spikes = vec![SpikeTrain::new()];
     let k_spikes = vec![SpikeTrain::new(), SpikeTrain::new()];

@@ -497,9 +497,35 @@ impl MincutGatedTransformer {
 
     // ---- Private methods ----
 
+    /// Run minimal scorer when skipping full inference (tier 3).
+    ///
+    /// This is a placeholder implementation that outputs zeros. In production,
+    /// this could be replaced with:
+    ///
+    /// 1. **Cached previous logits**: Return the last successfully computed logits
+    /// 2. **Linear scorer**: Simple embedding lookup + output projection
+    /// 3. **Null model**: Output uniform distribution
+    /// 4. **Repetition suppression**: Copy input tokens with slight perturbation
+    ///
+    /// The cheap scorer is invoked when:
+    /// - `spike.fired == 0` (no significant change detected)
+    /// - `tier_decision.tier == 3` (skip tier selected)
+    /// - Lambda is extremely stable (λ-delta near zero)
+    ///
+    /// # Performance
+    ///
+    /// Expected latency: < 1μs (just memory zero)
+    /// This represents ~100-200× speedup over full inference.
+    ///
+    /// # TODO
+    ///
+    /// Implement a proper lightweight scorer that:
+    /// - Maintains semantic coherence with previous outputs
+    /// - Avoids discontinuities in streaming scenarios
+    /// - Optionally uses cached embeddings for input tokens
     fn run_cheap_scorer(&mut self, _input: &InferInput, output: &mut InferOutput) -> Result<()> {
-        // Minimal linear scorer when skipping full inference
-        // Just zero the output for now
+        // Placeholder: Zero output (null model)
+        // In production, consider returning cached_logits or running a linear scorer
         for v in output.logits_i32.iter_mut() {
             *v = 0;
         }

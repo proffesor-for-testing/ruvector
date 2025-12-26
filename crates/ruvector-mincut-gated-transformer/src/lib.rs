@@ -93,6 +93,7 @@ extern crate alloc;
 pub mod config;
 pub mod error;
 pub mod packets;
+pub mod q15;
 pub mod state;
 pub mod model;
 pub mod gate;
@@ -121,6 +122,7 @@ pub use error::{Error, Result};
 pub use packets::{
     GatePacket, SpikePacket, GateDecision, GateReason, Witness, InferInput, InferOutput, InferStats,
 };
+pub use q15::Q15;
 pub use state::RuntimeState;
 pub use model::{MincutGatedTransformer, QuantizedWeights, WeightsLoader};
 pub use gate::{GateController, TierDecision};

@@ -11,7 +11,6 @@
 //! - Vaswani, A., et al. (2017). Attention is all you need. NeurIPS 2017.
 
 extern crate alloc;
-use alloc::vec;
 
 use crate::kernel::qgemm::qgemm_i8;
 

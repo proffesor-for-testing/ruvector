@@ -47,11 +47,17 @@ impl SpectralPositionEncoder {
     pub fn new(config: SpectralPEConfig) -> Self {
         Self { config }
     }
+}
 
-    /// Create with default configuration.
-    pub fn default_config() -> Self {
-        Self::new(SpectralPEConfig::default())
+impl Default for SpectralPositionEncoder {
+    fn default() -> Self {
+        Self {
+            config: SpectralPEConfig::default(),
+        }
     }
+}
+
+impl SpectralPositionEncoder {
 
     /// Compute graph Laplacian from boundary edges.
     ///
@@ -366,7 +372,6 @@ pub fn rayleigh_quotient(matrix: &[f32], n: usize, v: &[f32]) -> f32 {
 mod tests {
     use super::*;
     use alloc::vec;
-    use alloc::vec::Vec;
 
     #[test]
     fn test_config_default() {
@@ -378,7 +383,7 @@ mod tests {
 
     #[test]
     fn test_laplacian_empty() {
-        let encoder = SpectralPositionEncoder::default_config();
+        let encoder = SpectralPositionEncoder::default();
         let laplacian = encoder.compute_laplacian(&[], 4);
 
         // Empty edges -> zero Laplacian (no connections)
@@ -388,7 +393,7 @@ mod tests {
 
     #[test]
     fn test_laplacian_simple_graph() {
-        let encoder = SpectralPositionEncoder::default_config();
+        let encoder = SpectralPositionEncoder::default();
 
         // Simple chain: 0-1-2-3
         let edges = vec![(0, 1), (1, 2), (2, 3)];
@@ -408,7 +413,7 @@ mod tests {
 
     #[test]
     fn test_laplacian_symmetric() {
-        let encoder = SpectralPositionEncoder::default_config();
+        let encoder = SpectralPositionEncoder::default();
 
         let edges = vec![(0, 1), (1, 2), (0, 2)]; // Triangle
         let laplacian = encoder.compute_laplacian(&edges, 3);
@@ -473,7 +478,7 @@ mod tests {
 
     #[test]
     fn test_encode_positions() {
-        let encoder = SpectralPositionEncoder::default_config();
+        let encoder = SpectralPositionEncoder::default();
 
         let eigenvectors = vec![
             vec![0.1, 0.2, 0.3, 0.4],
@@ -566,7 +571,7 @@ mod tests {
 
     #[test]
     fn test_normalized_laplacian() {
-        let encoder = SpectralPositionEncoder::default_config();
+        let encoder = SpectralPositionEncoder::default();
 
         let edges = vec![(0, 1), (1, 2)];
         let laplacian = encoder.compute_normalized_laplacian(&edges, 3);
@@ -578,7 +583,7 @@ mod tests {
 
     #[test]
     fn test_embedding_saturation() {
-        let encoder = SpectralPositionEncoder::default_config();
+        let encoder = SpectralPositionEncoder::default();
 
         let mut embeddings = vec![127i8]; // Maximum value
         let pe = vec![100.0]; // Large PE value
