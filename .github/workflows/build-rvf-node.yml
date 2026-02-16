@@ -86,16 +86,24 @@ jobs:
       - name: Copy binary to platform package
         shell: bash
         run: |
-          SRC=$(find crates/rvf/rvf-node -name "rvf-node.*.node" -type f | head -1)
+          SRC=$(find crates/rvf/rvf-node -maxdepth 1 -name "rvf-node.*.node" -type f | head -1)
           FNAME=$(basename "$SRC")
 
-          # Copy to npm platform package
+          # Copy to npm platform package (avoid same-file error)
           PLAT_DIR="crates/rvf/rvf-node/npm/${{ matrix.settings.platform }}"
           mkdir -p "$PLAT_DIR"
-          cp -v "$SRC" "$PLAT_DIR/$FNAME"
+          if [ "$(realpath "$SRC")" != "$(realpath "$PLAT_DIR/$FNAME" 2>/dev/null)" ]; then
+            cp -v "$SRC" "$PLAT_DIR/$FNAME"
+          else
+            echo "Source and dest are same file, skipping copy to platform dir"
+          fi
 
           # Copy to main rvf-node package
-          cp -v "$SRC" "npm/packages/rvf-node/$FNAME"
+          if [ "$(realpath "$SRC")" != "$(realpath "npm/packages/rvf-node/$FNAME" 2>/dev/null)" ]; then
+            cp -v "$SRC" "npm/packages/rvf-node/$FNAME"
+          else
+            echo "Source and dest are same file, skipping copy to main dir"
+          fi
 
           echo "=== Platform package ==="
           ls -lh "$PLAT_DIR/"
