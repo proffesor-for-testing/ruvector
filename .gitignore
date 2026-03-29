@@ -112,3 +112,4 @@ crates/mcp-brain-server/mcp-brain-server
 
 # Backup files
 *.bak
+.agentic-qe/
