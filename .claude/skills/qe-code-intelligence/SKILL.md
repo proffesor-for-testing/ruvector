@@ -25,18 +25,29 @@ Guide the use of v3's code intelligence capabilities including knowledge graph c
 ## Quick Start
 
 ```bash
-# Index codebase into knowledge graph
-aqe kg index --source src/ --incremental
+# Incremental index (only changed files since last scan)
+bash scripts/code-intelligence/run.sh --incremental
 
-# Semantic code search
-aqe kg search "authentication middleware" --limit 10
+# Full re-index of entire monorepo
+bash scripts/code-intelligence/run.sh --full --verbose
 
-# Query dependencies
-aqe kg deps --file src/services/UserService.ts --depth 3
+# Scoped scan (single project group or sub-project)
+bash scripts/code-intelligence/run.sh --scope crates --lang rs
+bash scripts/code-intelligence/run.sh --scope npm/packages --lang ts,js
 
-# Get intelligent context
-aqe kg context --query "how does payment processing work"
+# Search the existing index by entity name or file path
+bash scripts/code-intelligence/run.sh --query "HnswIndex"
 ```
+
+### Script Pipeline
+
+| Script | Purpose |
+|--------|---------|
+| `scripts/code-intelligence/run.sh` | Orchestrator entry point for agents and CI |
+| `scripts/code-intelligence/index.mjs` | Core indexer: discovers sub-projects, extracts entities/edges/complexity |
+| `scripts/code-intelligence/store-to-aqe.mjs` | Stores index results into AQE memory for agent queries |
+
+See `steps/01-run-indexer.md` for full AQE memory key reference.
 
 ## Agent Workflow
 
