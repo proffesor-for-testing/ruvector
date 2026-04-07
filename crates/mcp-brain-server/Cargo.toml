@@ -12,6 +12,14 @@ publish = false
 name = "mcp-brain-server"
 path = "src/main.rs"
 
+[[bin]]
+name = "ruvbrain-sse"
+path = "src/bin/ruvbrain_sse.rs"
+
+[[bin]]
+name = "ruvbrain-worker"
+path = "src/bin/ruvbrain_worker.rs"
+
 [dependencies]
 # Web framework
 axum = { version = "0.7", features = ["json", "query"] }
@@ -56,6 +64,7 @@ ruvector-domain-expansion = { path = "../ruvector-domain-expansion" }
 ruvector-delta-core = { path = "../ruvector-delta-core" }
 ruvector-solver = { path = "../ruvector-solver", features = ["forward-push"] }
 ruvector-sparsifier = { path = "../ruvector-sparsifier" }
+ruvector-consciousness = { path = "../ruvector-consciousness", features = ["phi"], default-features = false }
 
 # RuvLLM Embeddings (HashEmbedder + RlmEmbedder — pure Rust, no model download)
 ruvllm = { path = "../ruvllm", default-features = false, features = ["minimal"] }

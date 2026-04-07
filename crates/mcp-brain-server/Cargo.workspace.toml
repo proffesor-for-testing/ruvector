@@ -5,6 +5,7 @@ members = [
     "crates/mcp-brain-server",
     "crates/mcp-brain",
     "crates/sona",
+    "crates/ruvector-consciousness",
     "crates/ruvector-mincut",
     "crates/ruvector-nervous-system",
     "crates/ruvector-domain-expansion",
@@ -21,7 +22,7 @@ members = [
 ]
 
 [workspace.package]
-version = "2.0.6"
+version = "2.1.0"
 edition = "2021"
 rust-version = "1.77"
 license = "MIT"

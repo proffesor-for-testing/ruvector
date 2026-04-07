@@ -138,6 +138,21 @@ members = [
     # Spectral graph sparsification
     "crates/ruvector-sparsifier",
     "crates/ruvector-sparsifier-wasm",
+    # Consciousness metrics (IIT Φ, causal emergence)
+    "crates/ruvector-consciousness",
+    "crates/ruvector-consciousness-wasm",
+    "examples/cmb-consciousness",
+    "examples/gw-consciousness",
+    "examples/ecosystem-consciousness",
+    "examples/quantum-consciousness",
+    "examples/gene-consciousness",
+    "examples/climate-consciousness",
+    # JS bundle decompiler (ADR-135)
+    "crates/ruvector-decompiler",
+    "crates/ruvector-decompiler-wasm",
+    # DiskANN / Vamana (ADR-143)
+    "crates/ruvector-diskann",
+    "crates/ruvector-diskann-node",
 ]
 resolver = "2"
 

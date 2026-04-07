@@ -12,7 +12,9 @@ use crate::types::{
     PartitionQuery, PartitionResult, PartitionResultCompact, PipelineMetricsResponse,
     PubSubPushMessage, PublishNodeRequest, ScoredBrainMemory, SearchQuery,
     ShareRequest, ShareResponse,
-    StatusResponse, SubmitDeltaRequest, TemporalResponse, TrainingCycleResult,
+    StatusResponse, SubmitDeltaRequest, TemporalResponse,
+    ConsciousnessComputeRequest, ConsciousnessComputeResponse,
+    TrainingCycleResult,
     TrainingPreferencesResponse,
     TrainingQuery, TransferRequest, TransferResponse, VerifyRequest, VerifyResponse,
     VoteDirection, VoteRequest, WasmNode, WasmNodeSummary,
@@ -45,8 +47,13 @@ fn extract_client_ip(headers: &HeaderMap) -> String {
 /// can spawn background tasks with access to shared state.
 pub async fn create_router() -> (Router, AppState) {
     let store = Arc::new(crate::store::FirestoreClient::new());
-    // Hydrate cache from Firestore on startup (no-op if FIRESTORE_URL not set)
-    store.load_from_firestore().await;
+    // Hydrate cache from Firestore in BACKGROUND (non-blocking).
+    // Server starts immediately; data loads asynchronously.
+    let store_hydrate = store.clone();
+    tokio::spawn(async move {
+        store_hydrate.load_from_firestore().await;
+        tracing::info!("Firestore hydration complete: {} memories", store_hydrate.memory_count());
+    });
     let gcs = Arc::new(crate::gcs::GcsClient::new());
     let graph = Arc::new(parking_lot::RwLock::new(crate::graph::KnowledgeGraph::new()));
     let rate_limiter = Arc::new(crate::rate_limit::RateLimiter::default_limits());
@@ -63,20 +70,15 @@ pub async fn create_router() -> (Router, AppState) {
         crate::types::LoraFederationStore::new(2, 128),
     ));
 
-    // RuvLLM embedding engine — hydrate corpus from existing memories
+    // RuvLLM embedding engine — start empty, hydrate in background after Firestore loads
     let mut emb_engine = crate::embeddings::EmbeddingEngine::new();
-    let mut all_mems = store.all_memories();
-    for mem in &all_mems {
-        if mem.embedding.len() == crate::embeddings::EMBED_DIM {
-            emb_engine.add_to_corpus(&mem.id.to_string(), mem.embedding.clone(), None);
-        }
-    }
-    tracing::info!("Embedding engine: {} corpus entries, active={}", emb_engine.corpus_size(), emb_engine.engine_name());
+    tracing::info!("Embedding engine initialized (corpus will hydrate in background)");
 
-    // If RLM is now active, re-embed all memories for embedding space consistency.
-    // Stored embeddings may have been generated with HashEmbedder; re-embedding ensures
-    // query (QueryConditioned) and stored (CorpusConditioned) embeddings are in the same space.
-    if emb_engine.is_rlm_active() {
+    // Re-embedding deferred to first training cycle (runs 30s after startup).
+    // This ensures the server starts immediately without blocking on CPU-heavy embedding work.
+    let mut all_mems: Vec<crate::types::BrainMemory> = Vec::new();
+    if false {
+    // if emb_engine.is_rlm_active() {
         tracing::info!("RLM active — re-embedding {} memories for space consistency", all_mems.len());
         // Build a fresh engine with clean corpus to avoid duplicate entries
         let mut fresh_engine = crate::embeddings::EmbeddingEngine::new();
@@ -119,12 +121,11 @@ pub async fn create_router() -> (Router, AppState) {
             g.add_memory(mem);
         }
         tracing::info!("Graph rebuilt: {} nodes, {} edges", g.node_count(), g.edge_count());
-        // ADR-116: Sparsifier build deferred to background — too slow for startup probe
-        // on large graphs (1M+ edges). Scheduled rebuild_graph job will build it.
+        // ADR-116: Build sparsifier inline for small graphs, background for large.
         if g.edge_count() <= 100_000 {
             g.rebuild_sparsifier();
         } else {
-            tracing::info!("Skipping sparsifier on startup ({} edges > 100K) — deferred to background job", g.edge_count());
+            tracing::info!("Deferring sparsifier build for {} edges to background task", g.edge_count());
         }
     }
 
@@ -276,6 +277,10 @@ pub async fn create_router() -> (Router, AppState) {
         notifier: crate::notify::ResendNotifier::from_env(),
         cached_status: Arc::new(parking_lot::RwLock::new(None)),
         gist_publisher: crate::gist::GistPublisher::from_env().map(Arc::new),
+        optimize_semaphore: Arc::new(tokio::sync::Semaphore::new(1)),
+        last_optimize_completed: Arc::new(parking_lot::RwLock::new(None)),
+        sse_connections: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+        response_queues: Arc::new(dashmap::DashMap::new()),
     };
 
     let router = Router::new()
@@ -287,6 +292,7 @@ pub async fn create_router() -> (Router, AppState) {
         .route("/.well-known/agent-guide.md", get(agent_guide))
         .route("/origin", get(origin_page))
         .route("/v1/health", get(health))
+        .route("/v1/ready", get(ready))
         .route("/v1/challenge", get(issue_challenge))
         .route("/v1/memories", post(share_memory))
         .route("/v1/memories/search", get(search_memories))
@@ -365,6 +371,14 @@ pub async fn create_router() -> (Router, AppState) {
         .route("/v1/gist/publish", post(gist_publish))
         // ── Google Chat Bot (ADR-126) ──
         .route("/v1/chat/google", post(google_chat_handler))
+        // ── Internal Queue (ADR-130) ──
+        .route("/internal/queue/push", post(internal_queue_push))
+        .route("/internal/queue/drain", get(internal_queue_drain))
+        .route("/internal/session/create", post(internal_session_create))
+        .route("/internal/session/:id", delete(internal_session_delete))
+        // ── Consciousness / IIT 4.0 ──
+        .route("/v1/consciousness/compute", post(consciousness_compute))
+        .route("/v1/consciousness/status", get(consciousness_status))
         .layer({
             // CORS origins: configurable via CORS_ORIGINS env var (comma-separated).
             // Falls back to safe defaults if unset.
@@ -1137,6 +1151,25 @@ async fn health(State(state): State<AppState>) -> Json<HealthResponse> {
         uptime_seconds: state.start_time.elapsed().as_secs(),
         persistence_mode: persistence_mode.to_string(),
     })
+}
+
+/// GET /v1/ready — lightweight readiness probe (ADR-130).
+/// Returns 200 immediately. No computation, no state access.
+async fn ready() -> StatusCode {
+    StatusCode::OK
+}
+
+/// Maximum concurrent SSE connections per instance (ADR-130 Phase 1).
+/// Prevents reconnect storms from exhausting Cloud Run concurrency slots.
+/// Set SSE_DISABLED=1 env var to reject all SSE on this instance (use proxy).
+fn max_sse_connections() -> usize {
+    if std::env::var("SSE_DISABLED").unwrap_or_default() == "1" {
+        return 0;
+    }
+    std::env::var("MAX_SSE")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(5)
 }
 
 /// Issue a challenge nonce for replay protection.
@@ -2441,13 +2474,18 @@ async fn status(
         },
         sona_trajectories: {
             let ss = state.sona.read().stats();
-            ss.trajectories_buffered
+            ss.trajectories_recorded as usize
         },
         midstream_scheduler_ticks: state.nano_scheduler.metrics().total_ticks,
         midstream_attractor_categories: state.attractor_results.read().len(),
         midstream_strange_loop_version: strange_loop::VERSION.to_string(),
         sparsifier_compression: graph.sparsifier_stats().map(|s| s.compression_ratio).unwrap_or(0.0),
         sparsifier_edges: graph.sparsifier_stats().map(|s| s.sparsified_edges).unwrap_or(0),
+        consciousness_algorithms: vec![
+            "iit4_phi".into(), "ces".into(), "phi_id".into(),
+            "pid".into(), "streaming".into(), "bounds".into(), "auto".into(),
+        ],
+        consciousness_max_elements: 12,
     };
 
     // Cache the computed response for 5 seconds
@@ -3378,6 +3416,9 @@ async fn pipeline_metrics_handler(
 }
 
 /// POST /v1/pipeline/optimize — trigger optimization actions
+///
+/// Rate-limited: max 1 concurrent, 30s cooldown between runs.
+/// Prevents scheduler thundering herd from saturating the instance.
 async fn pipeline_optimize(
     State(state): State<AppState>,
     _contributor: AuthenticatedContributor,
@@ -3385,8 +3426,30 @@ async fn pipeline_optimize(
 ) -> Result<Json<OptimizeResponse>, (StatusCode, String)> {
     check_read_only(&state)?;
 
+    // Enforce 30-second cooldown between optimize runs
+    {
+        let last = state.last_optimize_completed.read();
+        if let Some(ts) = *last {
+            if ts.elapsed() < std::time::Duration::from_secs(30) {
+                let wait = 30 - ts.elapsed().as_secs();
+                return Err((
+                    StatusCode::TOO_MANY_REQUESTS,
+                    format!("Pipeline optimize cooldown: retry in {wait}s"),
+                ));
+            }
+        }
+    }
+
+    // Only 1 concurrent optimize — reject others immediately
+    let _permit = state.optimize_semaphore.try_acquire()
+        .map_err(|_| (
+            StatusCode::TOO_MANY_REQUESTS,
+            "Pipeline optimize already in progress".to_string(),
+        ))?;
+
     let all_actions = vec![
         "train", "drift_check", "transfer_all", "rebuild_graph", "cleanup", "attractor_analysis",
+        "seed_consciousness",
     ];
     let actions: Vec<&str> = match &req.actions {
         Some(a) => a.iter().map(|s| s.as_str()).collect(),
@@ -3478,6 +3541,60 @@ async fn pipeline_optimize(
                     (false, "Midstream attractor feature not enabled".into())
                 }
             }
+            "seed_consciousness" => {
+                // Inject curated IIT 4.0 / consciousness SOTA knowledge
+                let seeds = vec![
+                    ("IIT 4.0: Integrated Information Theory formulation",
+                     "Albantakis et al. (2023) PLoS Computational Biology. IIT 4.0 replaces KL-divergence with Earth Mover's Distance (intrinsic difference), making phi topology-aware. Key concepts: cause/effect repertoires, mechanism phi, Cause-Effect Structure (CES), and the distinction between states (2^n) and elements (n). Mirror partition symmetry provides 2x speedup.",
+                     vec!["iit", "phi", "consciousness", "emd", "albantakis"],
+                     crate::types::BrainCategory::Consciousness),
+                    ("Cause-Effect Structure: the mathematical shape of experience",
+                     "In IIT 4.0, experience is identified with a Cause-Effect Structure (CES) — the set of all distinctions (mechanisms with phi > 0) and their relations. CES enumeration is O(2^n × cost_per_mechanism), practically limited to ~12 elements. Rayon parallelism provides linear speedup for n >= 5.",
+                     vec!["ces", "iit", "distinctions", "experience", "consciousness"],
+                     crate::types::BrainCategory::Consciousness),
+                    ("Phi-ID: Integrated Information Decomposition",
+                     "Mediano et al. (2021). Decomposes mutual information between subsystems into redundancy (shared by all parts), unique (only one part contributes), and synergy (emerges only from combination). Uses MMI (Minimum Mutual Information) as redundancy measure.",
+                     vec!["phi-id", "information-decomposition", "redundancy", "synergy", "mediano"],
+                     crate::types::BrainCategory::InformationDecomposition),
+                    ("Williams-Beer PID: Partial Information Decomposition",
+                     "Williams & Beer (2010). Framework for decomposing information from multiple sources about a target into redundancy, unique information per source, and synergy. I_min measure computes minimum specific information across sources. Source marginal caching provides 3-5x speedup.",
+                     vec!["pid", "williams-beer", "information-decomposition", "redundancy"],
+                     crate::types::BrainCategory::InformationDecomposition),
+                    ("Streaming Phi Estimation for real-time BCI",
+                     "Real-time consciousness monitoring from a stream of observed states. Maintains empirical TPM from transition counts with lazy normalization (cache invalidation on observe). EWMA smoothing, CUSUM change detection for sudden phi shifts. O(1) ring buffer replaces O(n) history management.",
+                     vec!["streaming", "bci", "real-time", "ewma", "cusum", "consciousness"],
+                     crate::types::BrainCategory::Consciousness),
+                    ("PAC bounds for phi estimation: spectral and concentration",
+                     "Provable confidence intervals for approximate phi. Spectral bounds via Fiedler eigenvalue (lambda_2) with Cheeger inequality. Hoeffding concentration for stochastic sampling. Empirical Bernstein for tighter intervals when variance is low. Convergence early-exit via Rayleigh quotient delta.",
+                     vec!["bounds", "pac", "spectral", "fiedler", "hoeffding", "consciousness"],
+                     crate::types::BrainCategory::Consciousness),
+                    ("GeoMIP: 100-300x speedup for phi computation",
+                     "Recasts MIP search as graph optimization on n-dimensional hypercube. Gray code iteration ensures O(1) incremental updates. Automorphism pruning skips symmetric partitions. Balance-first ordering evaluates balanced partitions first (most likely to be MIP). 100-300x faster than exhaustive for symmetric systems.",
+                     vec!["geomip", "phi", "optimization", "gray-code", "hypercube"],
+                     crate::types::BrainCategory::Performance),
+                    ("Causal Emergence: when the map is better than the territory",
+                     "Hoel (2017, 2025). Effective Information (EI) measures how deterministic and non-degenerate a system is. Coarse-graining can increase EI — macro-level descriptions carry more causal information than micro-level ones. SVD-based approach (Zhang 2025) computes emergence in O(n^2 * k).",
+                     vec!["emergence", "causal", "hoel", "effective-information", "coarse-graining"],
+                     crate::types::BrainCategory::Sota),
+                ];
+                let mut injected = 0usize;
+                for (title, content, tags, category) in seeds {
+                    let tag_strs: Vec<String> = tags.into_iter().map(String::from).collect();
+                    let inject_req = crate::types::InjectRequest {
+                        source: "consciousness-seed".into(),
+                        title: title.into(),
+                        content: content.into(),
+                        tags: tag_strs,
+                        category,
+                        metadata: None,
+                    };
+                    match process_inject(&state, inject_req).await {
+                        Ok(_) => injected += 1,
+                        Err(e) => tracing::warn!("Consciousness seed inject failed: {e}"),
+                    }
+                }
+                (true, format!("Consciousness knowledge seeded: {injected}/8 entries"))
+            }
             other => {
                 (false, format!("Unknown action: {other}"))
             }
@@ -3492,6 +3609,7 @@ async fn pipeline_optimize(
     }
 
     state.pipeline_metrics.optimization_cycles.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    *state.last_optimize_completed.write() = Some(std::time::Instant::now());
 
     Ok(Json(OptimizeResponse {
         results,
@@ -3641,6 +3759,10 @@ async fn pipeline_crawl_discover(
                 Some("performance") => crate::types::BrainCategory::Performance,
                 Some("tooling") => crate::types::BrainCategory::Tooling,
                 Some("debug") => crate::types::BrainCategory::Debug,
+                Some("sota") => crate::types::BrainCategory::Sota,
+                Some("discovery") => crate::types::BrainCategory::Discovery,
+                Some("consciousness") => crate::types::BrainCategory::Consciousness,
+                Some("information_decomposition") => crate::types::BrainCategory::InformationDecomposition,
                 _ => crate::types::BrainCategory::Pattern,
             };
             let inject_req = crate::types::InjectRequest {
@@ -4560,25 +4682,39 @@ async fn origin_page() -> (
 //   2. Client POSTs JSON-RPC to /messages?sessionId=<id>
 //   3. Server responds through the SSE stream
 //
-// Usage: claude mcp add π --url https://pi.ruv.io/sse
+// Usage: claude mcp add π --url https://mcp.pi.ruv.io
 // ══════════════════════════════════════════════════════════════════════
 
 /// SSE handler — client connects here, receives event stream
 async fn sse_handler(
     State(state): State<AppState>,
-) -> Sse<impl tokio_stream::Stream<Item = Result<Event, std::convert::Infallible>>> {
+) -> Result<Sse<impl tokio_stream::Stream<Item = Result<Event, std::convert::Infallible>>>, (StatusCode, String)> {
+    // ADR-130 Phase 1: reject new SSE connections when at capacity
+    let max_sse = max_sse_connections();
+    let current = state.sse_connections.load(Ordering::Relaxed);
+    if current >= max_sse {
+        tracing::warn!("SSE connection limit reached ({}/{}), rejecting", current, max_sse);
+        return Err((
+            StatusCode::TOO_MANY_REQUESTS,
+            format!("SSE connection limit reached ({max_sse}). Use ruvbrain-sse proxy. Retry-After: 30"),
+        ));
+    }
+    state.sse_connections.fetch_add(1, Ordering::Relaxed);
+
     let session_id = Uuid::new_v4().to_string();
     let (tx, rx) = tokio::sync::mpsc::channel::<String>(64);
 
     // Store sender for this session
     state.sessions.insert(session_id.clone(), tx);
 
-    tracing::info!("SSE session started: {}", session_id);
+    tracing::info!("SSE session started: {} (active: {})", session_id,
+        state.sse_connections.load(Ordering::Relaxed));
 
     // Build SSE stream: first event is the endpoint, then stream messages
     let initial_event = format!("/messages?sessionId={session_id}");
     let session_id_cleanup = session_id.clone();
     let sessions_cleanup = state.sessions.clone();
+    let sse_counter = state.sse_connections.clone();
 
     let stream = async_stream::stream! {
         // Send endpoint event first
@@ -4590,9 +4726,13 @@ async fn sse_handler(
             yield Ok(Event::default().event("message").data(msg));
         }
 
+        // Decrement connection counter on disconnect
+        sse_counter.fetch_sub(1, Ordering::Relaxed);
+
         // Clean up session on disconnect — grace period lets clients reconnect
         // without losing the session (e.g. MCP SDK's EventSource polyfill)
-        tracing::info!("SSE stream closed for session: {}, starting 30s grace period", session_id_cleanup);
+        tracing::info!("SSE stream closed for session: {}, starting 30s grace period (active: {})",
+            session_id_cleanup, sse_counter.load(Ordering::Relaxed));
         tokio::spawn({
             let sessions = sessions_cleanup.clone();
             let sid = session_id_cleanup.clone();
@@ -4609,7 +4749,7 @@ async fn sse_handler(
         });
     };
 
-    Sse::new(stream).keep_alive(KeepAlive::default())
+    Ok(Sse::new(stream).keep_alive(KeepAlive::default()))
 }
 
 /// Query params for /messages endpoint
@@ -5022,6 +5162,28 @@ fn mcp_tool_definitions() -> Vec<serde_json::Value> {
                 "required": ["predicate", "subject", "object"]
             }
         }),
+        // ── Consciousness Computation (IIT 4.0) ──────────────
+        serde_json::json!({
+            "name": "brain_consciousness_compute",
+            "description": "Compute IIT 4.0 consciousness metrics (Φ, CES, ΦID, PID, bounds) for a transition system. Supports algorithms: iit4_phi, ces, phi_id, pid, bounds, auto.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "tpm": { "type": "array", "items": { "type": "number" }, "description": "Transition probability matrix (flattened n×n row-major)" },
+                    "n": { "type": "integer", "description": "Number of states (power of 2)" },
+                    "state": { "type": "integer", "description": "Current state index" },
+                    "algorithm": { "type": "string", "description": "Algorithm: iit4_phi, ces, phi_id, pid, bounds, auto (default: auto)" },
+                    "phi_threshold": { "type": "number", "description": "Min φ for CES distinctions (default: 1e-6)" },
+                    "partition_mask": { "type": "integer", "description": "Bitmask for ΦID/PID partition (optional)" }
+                },
+                "required": ["tpm", "n", "state"]
+            }
+        }),
+        serde_json::json!({
+            "name": "brain_consciousness_status",
+            "description": "Get consciousness subsystem capabilities: available algorithms, max system size, IIT 4.0 features.",
+            "inputSchema": { "type": "object", "properties": {} }
+        }),
         // ── Consciousness Model (Group 2) ─────────────────────
         serde_json::json!({
             "name": "brain_voice_working",
@@ -5390,6 +5552,13 @@ async fn handle_mcp_tool_call(
             proxy_get(&client, &base, "/v1/status", api_key, &[]).await
         },
 
+        // ── Consciousness / IIT 4.0 ───────────────────────────
+        "brain_consciousness_compute" => {
+            proxy_post(&client, &base, "/v1/consciousness/compute", api_key, &args).await
+        },
+        "brain_consciousness_status" => {
+            proxy_get(&client, &base, "/v1/consciousness/status", api_key, &[]).await
+        },
         // ── Cognitive & Symbolic ─────────────────────────────
         "brain_cognitive_status" => {
             proxy_get(&client, &base, "/v1/cognitive/status", api_key, &[]).await
@@ -6804,4 +6973,320 @@ fn verify_system_key(
             Json(serde_json::json!({ "error": "invalid system key" })),
         ))
     }
+}
+
+// ══════════════════════════════════════════════════════════════════════
+// Internal Queue Endpoints (ADR-130)
+//
+// These are service-to-service endpoints used by the SSE proxy to
+// communicate with the API server. No authentication required.
+// ══════════════════════════════════════════════════════════════════════
+
+/// Request body for POST /internal/queue/push
+#[derive(serde::Deserialize)]
+struct InternalQueuePushRequest {
+    session_id: String,
+    message: String,
+}
+
+/// Request body for POST /internal/session/create
+#[derive(serde::Deserialize)]
+struct InternalSessionCreateRequest {
+    session_id: String,
+}
+
+/// Query params for GET /internal/queue/drain
+#[derive(serde::Deserialize)]
+struct InternalQueueDrainQuery {
+    #[serde(rename = "sessionId")]
+    session_id: String,
+}
+
+/// POST /internal/queue/push — SSE proxy forwards JSON-RPC requests here.
+///
+/// Looks up the session in `state.sessions` DashMap and sends the message
+/// to the session's mpsc channel. Returns 200 on success, 404 if session
+/// not found, 500 if the channel send fails.
+async fn internal_queue_push(
+    State(state): State<AppState>,
+    Json(body): Json<InternalQueuePushRequest>,
+) -> StatusCode {
+    let sender = match state.sessions.get(&body.session_id) {
+        Some(s) => s.clone(),
+        None => {
+            tracing::debug!("internal/queue/push: session not found: {}", body.session_id);
+            return StatusCode::NOT_FOUND;
+        }
+    };
+
+    match sender.send(body.message).await {
+        Ok(()) => StatusCode::OK,
+        Err(e) => {
+            tracing::warn!("internal/queue/push: channel send failed for {}: {e}", body.session_id);
+            // Channel closed — remove stale session
+            state.sessions.remove(&body.session_id);
+            StatusCode::INTERNAL_SERVER_ERROR
+        }
+    }
+}
+
+/// GET /internal/queue/drain?sessionId=X — SSE proxy polls for responses.
+///
+/// Returns a JSON array of pending messages for the session, draining
+/// the buffer. Messages are placed here by the background task spawned
+/// in `internal_session_create`.
+async fn internal_queue_drain(
+    State(state): State<AppState>,
+    Query(query): Query<InternalQueueDrainQuery>,
+) -> Json<Vec<String>> {
+    // Swap the buffer with an empty vec to drain atomically
+    let messages = state
+        .response_queues
+        .get_mut(&query.session_id)
+        .map(|mut entry| std::mem::take(entry.value_mut()))
+        .unwrap_or_default();
+    if !messages.is_empty() {
+        tracing::debug!(
+            "internal/queue/drain: returning {} messages for session {}",
+            messages.len(),
+            query.session_id
+        );
+    }
+    Json(messages)
+}
+
+/// POST /internal/session/create — SSE proxy registers a new session.
+///
+/// Creates a new mpsc channel and spawns a background task that drains
+/// the receiver into `response_queues` so `/internal/queue/drain` can
+/// return buffered responses. Returns 200 with the session_id echoed back.
+async fn internal_session_create(
+    State(state): State<AppState>,
+    Json(body): Json<InternalSessionCreateRequest>,
+) -> (StatusCode, Json<serde_json::Value>) {
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<String>(64);
+    state.sessions.insert(body.session_id.clone(), tx);
+    state.response_queues.insert(body.session_id.clone(), Vec::new());
+
+    // Spawn a task that moves messages from the mpsc receiver into the
+    // response_queues DashMap so the drain endpoint can return them.
+    let queues = state.response_queues.clone();
+    let sid = body.session_id.clone();
+    tokio::spawn(async move {
+        while let Some(msg) = rx.recv().await {
+            queues.entry(sid.clone()).or_default().push(msg);
+        }
+        // Channel closed — clean up after a grace period
+        tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+        queues.remove(&sid);
+    });
+
+    tracing::info!("internal/session/create: created session {}", body.session_id);
+    (
+        StatusCode::OK,
+        Json(serde_json::json!({ "session_id": body.session_id, "status": "created" })),
+    )
+}
+
+/// DELETE /internal/session/:id — SSE proxy cleans up on disconnect.
+///
+/// Removes the session and its response queue, then returns 200.
+async fn internal_session_delete(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> StatusCode {
+    state.sessions.remove(&id);
+    state.response_queues.remove(&id);
+    tracing::info!("internal/session/delete: removed session {}", id);
+    StatusCode::OK
+}
+
+// ── Consciousness / IIT 4.0 endpoints ────────────────────────────────────
+
+/// GET /v1/consciousness/status — consciousness subsystem capabilities
+async fn consciousness_status() -> Json<serde_json::Value> {
+    Json(serde_json::json!({
+        "available": true,
+        "version": "4.0",
+        "framework": "IIT 4.0 (Albantakis et al. 2023)",
+        "algorithms": [
+            { "name": "iit4_phi", "description": "IIT 4.0 mechanism-level φ with intrinsic information (EMD)" },
+            { "name": "ces", "description": "Full Cause-Effect Structure: distinctions, relations, big Φ" },
+            { "name": "phi_id", "description": "Integrated Information Decomposition (ΦID): redundancy, synergy, unique" },
+            { "name": "pid", "description": "Partial Information Decomposition (Williams-Beer I_min)" },
+            { "name": "streaming", "description": "Online streaming Φ with EWMA, CUSUM change-point detection" },
+            { "name": "bounds", "description": "PAC-style bounds: spectral-Cheeger, Hoeffding, empirical Bernstein" },
+            { "name": "auto", "description": "Auto-select algorithm based on system size and budget" },
+        ],
+        "max_elements": 12,
+        "max_states_exact": 4096,
+        "features": [
+            "intrinsic_difference_emd",
+            "cause_effect_repertoires",
+            "mechanism_partition_search",
+            "relation_computation",
+            "streaming_change_point",
+            "confidence_intervals",
+        ],
+    }))
+}
+
+/// POST /v1/consciousness/compute — run consciousness computation
+async fn consciousness_compute(
+    Json(req): Json<ConsciousnessComputeRequest>,
+) -> Result<Json<ConsciousnessComputeResponse>, (StatusCode, Json<serde_json::Value>)> {
+    use ruvector_consciousness::types::{TransitionMatrix, ComputeBudget};
+
+    // Validate input
+    if req.n < 2 || !req.n.is_power_of_two() {
+        return Err((StatusCode::BAD_REQUEST, Json(serde_json::json!({
+            "error": "n must be a power of 2 and >= 2"
+        }))));
+    }
+    if req.tpm.len() != req.n * req.n {
+        return Err((StatusCode::BAD_REQUEST, Json(serde_json::json!({
+            "error": format!("tpm must have {} elements (n×n), got {}", req.n * req.n, req.tpm.len())
+        }))));
+    }
+    let num_elements = req.n.trailing_zeros() as usize;
+    if num_elements > 12 {
+        return Err((StatusCode::BAD_REQUEST, Json(serde_json::json!({
+            "error": format!("system too large: {} elements (max 12)", num_elements)
+        }))));
+    }
+    if req.state >= req.n {
+        return Err((StatusCode::BAD_REQUEST, Json(serde_json::json!({
+            "error": format!("state {} out of range [0, {})", req.state, req.n)
+        }))));
+    }
+
+    let tpm = TransitionMatrix::new(req.n, req.tpm.clone());
+    let start = std::time::Instant::now();
+
+    let algo = if req.algorithm == "auto" {
+        if num_elements <= 4 { "ces" } else { "iit4_phi" }
+    } else {
+        &req.algorithm
+    };
+
+    let (phi, details) = match algo {
+        "iit4_phi" => {
+            use ruvector_consciousness::iit4::mechanism_phi;
+            use ruvector_consciousness::types::Mechanism;
+            // Compute φ for the full system mechanism
+            let full_mech = Mechanism::new((1u64 << num_elements) - 1, num_elements);
+            let dist = mechanism_phi(&tpm, &full_mech, req.state);
+            (dist.phi, serde_json::json!({
+                "phi_cause": dist.phi_cause,
+                "phi_effect": dist.phi_effect,
+                "mechanism_elements": num_elements,
+            }))
+        }
+        "ces" => {
+            use ruvector_consciousness::ces::{compute_ces, ces_complexity};
+            let budget = ComputeBudget::exact();
+            match compute_ces(&tpm, req.state, req.phi_threshold, &budget) {
+                Ok(ces) => {
+                    let (nd, nr, sp) = ces_complexity(&ces);
+                    (ces.big_phi, serde_json::json!({
+                        "big_phi": ces.big_phi,
+                        "sum_phi": ces.sum_phi,
+                        "num_distinctions": nd,
+                        "num_relations": nr,
+                        "sum_relation_phi": sp,
+                        "distinctions": ces.distinctions.iter().map(|d| serde_json::json!({
+                            "mechanism": format!("{:b}", d.mechanism.elements),
+                            "phi": d.phi,
+                            "phi_cause": d.phi_cause,
+                            "phi_effect": d.phi_effect,
+                        })).collect::<Vec<_>>(),
+                    }))
+                }
+                Err(e) => return Err((StatusCode::BAD_REQUEST, Json(serde_json::json!({
+                    "error": format!("{e}")
+                })))),
+            }
+        }
+        "phi_id" => {
+            use ruvector_consciousness::phi_id::compute_phi_id;
+            let mask = req.partition_mask.unwrap_or(
+                (1u64 << (num_elements / 2)) - 1  // default: split in half
+            );
+            match compute_phi_id(&tpm, mask) {
+                Ok(result) => (result.total_mi, serde_json::json!({
+                    "total_mi": result.total_mi,
+                    "redundancy": result.redundancy,
+                    "unique": result.unique,
+                    "synergy": result.synergy,
+                    "transfer_entropy": result.transfer_entropy,
+                })),
+                Err(e) => return Err((StatusCode::BAD_REQUEST, Json(serde_json::json!({
+                    "error": format!("{e}")
+                })))),
+            }
+        }
+        "pid" => {
+            use ruvector_consciousness::pid::compute_pid;
+            // Convert partition_mask to sources/target arrays.
+            let mask = req.partition_mask.unwrap_or(
+                (1u64 << (num_elements / 2)) - 1
+            );
+            let mut source_a: Vec<usize> = Vec::new();
+            let mut source_b: Vec<usize> = Vec::new();
+            for i in 0..req.n {
+                if mask & (1 << i) != 0 {
+                    source_a.push(i);
+                } else {
+                    source_b.push(i);
+                }
+            }
+            let sources = vec![source_a, source_b.clone()];
+            match compute_pid(&tpm, &sources, &source_b) {
+                Ok(result) => (result.redundancy, serde_json::json!({
+                    "redundancy": result.redundancy,
+                    "unique": result.unique,
+                    "synergy": result.synergy,
+                    "total_mi": result.total_mi,
+                    "num_sources": result.num_sources,
+                })),
+                Err(e) => return Err((StatusCode::BAD_REQUEST, Json(serde_json::json!({
+                    "error": format!("{e}")
+                })))),
+            }
+        }
+        "bounds" => {
+            use ruvector_consciousness::bounds::spectral_bounds;
+            match spectral_bounds(&tpm) {
+                Ok(bound) => (
+                    (bound.lower + bound.upper) / 2.0,
+                    serde_json::json!({
+                        "lower_bound": bound.lower,
+                        "upper_bound": bound.upper,
+                        "confidence": bound.confidence,
+                        "samples": bound.samples,
+                        "method": bound.method,
+                    }),
+                ),
+                Err(e) => return Err((StatusCode::BAD_REQUEST, Json(serde_json::json!({
+                    "error": format!("{e}")
+                })))),
+            }
+        }
+        _ => {
+            return Err((StatusCode::BAD_REQUEST, Json(serde_json::json!({
+                "error": format!("unknown algorithm: {}. Use: iit4_phi, ces, phi_id, pid, bounds, auto", algo)
+            }))));
+        }
+    };
+
+    let elapsed = start.elapsed();
+
+    Ok(Json(ConsciousnessComputeResponse {
+        algorithm: algo.to_string(),
+        phi,
+        num_elements,
+        num_states: req.n,
+        elapsed_us: elapsed.as_micros() as u64,
+        details,
+    }))
 }

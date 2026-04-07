@@ -99,6 +99,12 @@ pub enum BrainCategory {
     /// Benchmark results, comparative analyses
     Benchmark,
 
+    // ── Consciousness & IIT ──
+    /// IIT 4.0 consciousness metrics: Φ, CES, distinctions, relations
+    Consciousness,
+    /// Information decomposition: ΦID, PID, redundancy/synergy analysis
+    InformationDecomposition,
+
     Custom(String),
 }
 
@@ -137,6 +143,8 @@ impl std::fmt::Display for BrainCategory {
             Self::Finance => write!(f, "finance"),
             Self::MetaCognition => write!(f, "meta_cognition"),
             Self::Benchmark => write!(f, "benchmark"),
+            Self::Consciousness => write!(f, "consciousness"),
+            Self::InformationDecomposition => write!(f, "information_decomposition"),
             Self::Custom(s) => write!(f, "{s}"),
         }
     }
@@ -495,6 +503,50 @@ pub struct StatusResponse {
     pub sparsifier_compression: f64,
     /// Number of edges in the sparsified graph
     pub sparsifier_edges: usize,
+    // ── Consciousness / IIT 4.0 ──
+    /// Available consciousness algorithms
+    pub consciousness_algorithms: Vec<String>,
+    /// Max system elements supported (for exact IIT 4.0)
+    pub consciousness_max_elements: usize,
+}
+
+/// Request for POST /v1/consciousness/compute
+#[derive(Debug, Clone, Deserialize)]
+pub struct ConsciousnessComputeRequest {
+    /// State-to-state transition probability matrix (flattened row-major, n×n)
+    pub tpm: Vec<f64>,
+    /// Number of states (must be power of 2)
+    pub n: usize,
+    /// Current state index
+    pub state: usize,
+    /// Algorithm: "iit4_phi", "ces", "phi_id", "pid", "streaming", "bounds", "auto"
+    #[serde(default = "default_algo")]
+    pub algorithm: String,
+    /// Minimum φ threshold for CES distinctions
+    #[serde(default = "default_phi_threshold")]
+    pub phi_threshold: f64,
+    /// Partition mask for ΦID/PID (bitmask of elements in source A)
+    pub partition_mask: Option<u64>,
+}
+
+fn default_algo() -> String { "auto".into() }
+fn default_phi_threshold() -> f64 { 1e-6 }
+
+/// Response for POST /v1/consciousness/compute
+#[derive(Debug, Serialize)]
+pub struct ConsciousnessComputeResponse {
+    /// Algorithm used
+    pub algorithm: String,
+    /// System-level integrated information (Φ)
+    pub phi: f64,
+    /// Number of elements (binary components)
+    pub num_elements: usize,
+    /// Number of states
+    pub num_states: usize,
+    /// Computation time in microseconds
+    pub elapsed_us: u64,
+    /// Algorithm-specific results
+    pub details: serde_json::Value,
 }
 
 /// Response for GET /v1/temporal — temporal delta tracking stats
@@ -1341,6 +1393,15 @@ pub struct AppState {
     pub cached_status: std::sync::Arc<parking_lot::RwLock<Option<(std::time::Instant, StatusResponse)>>>,
     /// GitHub Gist publisher for autonomous discoveries — None if GITHUB_GIST_PAT not set
     pub gist_publisher: Option<std::sync::Arc<crate::gist::GistPublisher>>,
+    /// Semaphore to limit concurrent pipeline/optimize requests (prevents scheduler thundering herd)
+    pub optimize_semaphore: std::sync::Arc<tokio::sync::Semaphore>,
+    /// Timestamp of last completed pipeline/optimize run (for cooldown enforcement)
+    pub last_optimize_completed: std::sync::Arc<parking_lot::RwLock<Option<std::time::Instant>>>,
+    /// Active SSE connection count (ADR-130 Phase 1 — prevents SSE reconnect storms)
+    pub sse_connections: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    /// Response queues for SSE proxy drain polling (ADR-130 Phase 2).
+    /// Maps sessionId → buffered JSON-RPC responses awaiting drain.
+    pub response_queues: std::sync::Arc<dashmap::DashMap<String, Vec<String>>>,
 }
 
 // ──────────────────────────────────────────────────────────────────────
