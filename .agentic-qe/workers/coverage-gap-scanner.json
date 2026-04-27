@@ -1,0 +1,8 @@
+{
+  "name": "coverage-gap-scanner",
+  "enabled": true,
+  "interval": 3600000,
+  "projectRoot": "/workspaces/RuVector",
+  "dataDir": "/workspaces/RuVector/.agentic-qe/data",
+  "createdAt": "2026-04-27T07:54:21.737Z"
+}

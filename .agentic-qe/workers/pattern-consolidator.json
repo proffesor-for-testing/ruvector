@@ -1,0 +1,8 @@
+{
+  "name": "pattern-consolidator",
+  "enabled": true,
+  "interval": 1800000,
+  "projectRoot": "/workspaces/RuVector",
+  "dataDir": "/workspaces/RuVector/.agentic-qe/data",
+  "createdAt": "2026-04-27T07:54:21.737Z"
+}
