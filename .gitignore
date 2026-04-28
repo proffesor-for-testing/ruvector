@@ -140,3 +140,7 @@ agentdb.rvf
 agentdb.rvf.lock
 .kalshi
 bench_data/
+
+.agentic-qe/
+*.db-*
+*.db
